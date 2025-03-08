@@ -14,20 +14,39 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
  * 3. 处理 SWAP 交易
  * 4. 存储交易数据到数据库
  */
-export default async function handler(req, res) {
-  // 检查请求方法是否为 POST
-  if (req.method !== 'POST') return res.status(405).json({ message: 'Method not allowed' });
+export const handleWebhookRequest = async (req, res) => {
+  try {
+    // 验证请求方法
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
 
-  // 验证请求头中的 API Key
-  if (req.headers.authorization !== `Bearer ${process.env.HELIUS_API_KEY}`) {
-    return res.status(401).json({ message: 'Unauthorized' });
+    // 验证请求头中的 API Key
+    if (req.headers.authorization !== `Bearer ${process.env.HELIUS_API_KEY}`) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    // 处理 webhook 数据
+    await processWebhookData(req.body);
+
+    // 返回成功响应
+    return res.status(200).json({ message: 'Webhook processed successfully' });
+  } catch (error) {
+    console.error('Webhook processing error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
   }
+};
 
+/**
+ * 处理 Webhook 数据的具体实现
+ * @param {Object} data - Webhook 请求数据
+ */
+async function processWebhookData(data) {
   // 获取并检查交易数据
-  const txData = Array.isArray(req.body) ? req.body[0] : req.body;
+  const txData = Array.isArray(data) ? data[0] : data;
   if (!txData) {
     console.error('Empty transaction data received', txData);
-    return res.status(200).json({ skipped: true, message: 'Empty data' });
+    throw new Error('Empty data received');
   }
 
   // 处理交易数据
@@ -42,11 +61,11 @@ export default async function handler(req, res) {
     processedData = await solParser(txData.signature);
     if (!processedData) {
       console.error('Failed to parse tx:', txData.signature);
-      return res.status(200).json({ skipped: true, message: 'Parse failed', signature: txData.signature });
+      throw new Error(`Parse failed for signature: ${txData.signature}`);
     }
   } else {
     // 如果没有 SWAP 数据则跳过
-    return res.status(200).json({ skipped: true, message: 'No swap data' });
+    throw new Error('No swap data found');
   }
 
   // 将处理后的数据存储到 Supabase 数据库
@@ -58,12 +77,9 @@ export default async function handler(req, res) {
   // 处理数据库插入错误
   if (error) {
     console.error('Error inserting into Supabase:', error);
-    return res.status(500).json({ error: error });
+    throw error;
   }
 
-  // 记录成功信息并返回结果
+  // 记录成功信息
   console.log('Successfully processed and stored with parser:', txData.events?.swap ? 'helius' : 'shyft');
-  return res.status(200).json({
-    success: true
-  });
 }

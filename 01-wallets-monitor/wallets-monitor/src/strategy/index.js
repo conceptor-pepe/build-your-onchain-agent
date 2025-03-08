@@ -11,7 +11,7 @@ dotenv.config();
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // Configuration constants
-const MAX_AGE_DAYS = 7;
+const MAX_AGE_DAYS = 2;
 const MIN_MARKET_CAP = 100000; // 100k
 
 const getTimeStamp = () => {
@@ -61,7 +61,7 @@ async function checkFilter(tokenAddress) {
  * 2. 分析是否有多个钱包在6小时内买入同一代币
  * 3. 符合条件时触发代币分析和消息推送
  */
-async function startMonitor() {
+export async function startMonitor() {
   supabase
     .channel('txs_monitor')
     .on(
@@ -119,10 +119,10 @@ async function startMonitor() {
     })
 }
 
-// Start monitoring
-startMonitor().catch(error => {
-  console.error(`[${getTimeStamp()}] Monitor program error:`, error);
-  process.exit(1);
-});
+// // Start monitoring
+// startMonitor().catch(error => {
+//   console.error(`[${getTimeStamp()}] Monitor program error:`, error);
+//   process.exit(1);
+// });
 
 
