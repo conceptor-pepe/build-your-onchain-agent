@@ -2,26 +2,35 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import axiosRetry from 'axios-retry';
 
+// 加载环境变量
 dotenv.config();
 
+// 配置 API 密钥和主机地址
 const RAPID_API_KEY = process.env.RAPID_API_KEY;
 const TWITTER_API_HOST = 'twitter-api45.p.rapidapi.com';
-// https://rapidapi.com/alexanderxbx/api/twitter-api45
+// RapidAPI Twitter API 文档: https://rapidapi.com/alexanderxbx/api/twitter-api45
 
+// 配置 axios 重试机制
 axiosRetry(axios, {
-  retries: 3,
+  retries: 3, // 最大重试次数
   retryDelay: (retryCount) => {
-    return retryCount * 1000; // Increasing delay for each retry
+    return retryCount * 1000; // 重试延迟时间，每次递增1秒
   },
   retryCondition: (error) => {
-    // Only retry on network errors or 5xx errors
-    return axiosRetry.isNetworkOrIdempotentRequestError(error) || 
-           (error.response && error.response.status >= 500);
+    // 仅在网络错误或服务器错误(5xx)时重试
+    return axiosRetry.isNetworkOrIdempotentRequestError(error) ||
+      (error.response && error.response.status >= 500);
   }
 });
 
-// Searches for content on Twitter with specified query and search type
+/**
+ * 搜索 Twitter 内容
+ * @param {string} query - 搜索关键词
+ * @param {string} searchType - 搜索类型，默认为"Top"
+ * @returns {Array} 处理后的推文数据数组
+ */
 export async function searchTwitter(query, searchType = 'Top') {
+  // 配置 API 请求参数
   const options = {
     method: 'GET',
     url: 'https://twitter-api45.p.rapidapi.com/search.php',
@@ -35,44 +44,51 @@ export async function searchTwitter(query, searchType = 'Top') {
     }
   };
 
+  // 发送请求并处理错误
   const response = await axios.request(options).catch(error => {
     console.error('Twitter API Error:', error.message);
     throw error;
   });
 
+  // 验证响应数据
   if (!response || !response.data) {
     console.error('Twitter API Search Error: No response data');
     return null;
   }
 
-  // Extract and process tweet data
   if (!response.data?.timeline) {
     console.error('Twitter API Search Error: No tweet data');
     return [];
   }
 
+  // 处理并格式化推文数据
   return response.data.timeline.map(tweet => ({
-    text: tweet.text,                    // Tweet content
-    created_at: new Date(tweet.created_at).toLocaleString('en-US', {hour12: false}) + ' UTC',  // Published time, format: 2025/2/25 14:41:14 UTC
-    
-    // Engagement data
-    views: tweet.views,                  // View count
-    favorites: tweet.favorites,          // Like count
-    retweets: tweet.retweets,           // Retweet count
-    replies: tweet.replies,              // Reply count
-    
-    // Author information
+    text: tweet.text,                    // 推文内容
+    created_at: new Date(tweet.created_at).toLocaleString('en-US', { hour12: false }) + ' UTC',  // 发布时间
+
+    // 互动数据
+    views: tweet.views,                  // 浏览量
+    favorites: tweet.favorites,          // 点赞数
+    retweets: tweet.retweets,           // 转发数
+    replies: tweet.replies,              // 回复数
+
+    // 作者信息
     author: {
-      name: tweet.user_info.name,
-      screen_name: tweet.user_info.screen_name,
-      followers_count: tweet.user_info.followers_count,
-      description: tweet.user_info.description
+      name: tweet.user_info.name,        // 用户名称
+      screen_name: tweet.user_info.screen_name,  // 用户账号
+      followers_count: tweet.user_info.followers_count,  // 粉丝数
+      description: tweet.user_info.description    // 用户简介
     }
   }));
 }
 
-// Retrieves a Twitter user's timeline by screen name
+/**
+ * 获取指定用户的推文时间线
+ * @param {string} screenname - 用户的 Twitter 账号名
+ * @returns {Object} 包含用户信息和推文列表的对象
+ */
 export async function getUserTimeline(screenname) {
+  // 配置 API 请求参数
   const options = {
     method: 'GET',
     url: 'https://twitter-api45.p.rapidapi.com/timeline.php',
@@ -85,33 +101,35 @@ export async function getUserTimeline(screenname) {
     }
   };
 
+  // 发送请求并处理错误
   const response = await axios.request(options).catch(error => {
     console.error('Twitter API Error:', error.message);
     throw error;
   });
 
+  // 验证响应数据
   if (!response || !response.data) {
     console.error('Twitter API Timeline Error: No response data');
     return null;
   }
-  
-  // Organize data structure
+
+  // 组织返回数据结构
   const result = {
     user: {
-      name: response.data.user?.name,
-      screen_name: screenname,
-      verified: response.data.user?.blue_verified,
-      description: response.data.user?.desc,
-      followers_count: response.data.user?.sub_count
+      name: response.data.user?.name,           // 用户名称
+      screen_name: screenname,                  // 用户账号
+      verified: response.data.user?.blue_verified,  // 是否已认证
+      description: response.data.user?.desc,    // 用户简介
+      followers_count: response.data.user?.sub_count  // 粉丝数
     },
     tweets: []
   };
-  
-  // Add pinned tweet (if exists)
+
+  // 处理置顶推文（如果存在）
   if (response.data.pinned) {
     result.tweets.push({
       text: response.data.pinned.text,
-      created_at: new Date(response.data.pinned.created_at).toLocaleString('en-US', {hour12: false}) + ' UTC', 
+      created_at: new Date(response.data.pinned.created_at).toLocaleString('en-US', { hour12: false }) + ' UTC',
       views: response.data.pinned.views,
       favorites: response.data.pinned.favorites,
       retweets: response.data.pinned.retweets,
@@ -119,13 +137,13 @@ export async function getUserTimeline(screenname) {
       isPinned: true
     });
   }
-  
-  // Add timeline tweets
+
+  // 处理时间线推文
   if (response.data.timeline && Array.isArray(response.data.timeline)) {
     response.data.timeline.forEach(tweet => {
       result.tweets.push({
         text: tweet.text,
-        created_at: new Date(tweet.created_at).toLocaleString('en-US', {hour12: false}) + ' UTC', 
+        created_at: new Date(tweet.created_at).toLocaleString('en-US', { hour12: false }) + ' UTC',
         views: tweet.views,
         favorites: tweet.favorites,
         retweets: tweet.retweets,
@@ -134,7 +152,7 @@ export async function getUserTimeline(screenname) {
       });
     });
   }
-  
+
   return result;
 }
 

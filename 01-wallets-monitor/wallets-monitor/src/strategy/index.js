@@ -19,80 +19,101 @@ const getTimeStamp = () => {
 };
 
 // Check if token meets filtering criteria
+/**
+ * 检查代币是否满足过滤条件并发送分析结果
+ * @param {string} tokenAddress - 代币地址
+ */
 async function checkFilter(tokenAddress) {
   try {
-    const tokenInfo = await DexScreener.getTokenInfo('solana', tokenAddress);   
+    // 获取代币信息
+    const tokenInfo = await DexScreener.getTokenInfo('solana', tokenAddress);
     if (!tokenInfo) return;
-    
+
+    // 计算代币交易对的存在时间(天)
     const pairAge = (Date.now() / 1000 - tokenInfo.createdAt) / (60 * 60 * 24);
+
+    // 检查代币是否满足年龄和市值条件
     if (pairAge <= MAX_AGE_DAYS && tokenInfo.marketCap >= MIN_MARKET_CAP) {
+      // 分析代币的交易数据
       const analysis = await analyzeTokenTxs(tokenAddress);
-      
-      // Create and send message to Telegram
+
+      // 创建并发送Telegram消息
       const message = createMsg(tokenInfo, analysis);
       const tgResponse = await sendTelegramMessage(message);
-      
+
+      // 如果消息发送成功
       if (tgResponse?.ok === true) {
         const messageId = tgResponse.result.message_id;
-        // Send AI summary message
+        // 发送AI总结消息
         await sendSumMessage(tokenInfo, messageId);
         console.log(`[${getTimeStamp()}] Successfully sent analysis for token ${tokenAddress} to Telegram`);
-      } 
-    } 
+      }
+    }
   } catch (error) {
+    // 记录错误信息
     console.error(`[${getTimeStamp()}] Error checking token ${tokenAddress}:`, error);
   }
 }
-
-// Subscribe to INSERT events on the txs table
+/**
+ * 监控交易表的插入事件，分析多钱包买入行为
+ * 主要功能:
+ * 1. 监听新交易插入
+ * 2. 分析是否有多个钱包在6小时内买入同一代币
+ * 3. 符合条件时触发代币分析和消息推送
+ */
 async function startMonitor() {
   supabase
     .channel('txs_monitor')
     .on(
       'postgres_changes',
       {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'txs',
+        event: 'INSERT',      // 监听插入事件
+        schema: 'public',     // 公共模式
+        table: 'txs',         // 交易表
       },
       async (payload) => {
+        // 解析新交易数据
         const newTx = payload.new;
-        const tokenOutAddress = newTx.token_out_address;
-        const currentAccount = newTx.account;
-        const currentTimestamp = newTx.timestamp;
-        
-        // Check if it's not SOL or USDC (buy transaction)
+        const tokenOutAddress = newTx.token_out_address;  // 买入的代币地址
+        const currentAccount = newTx.account;             // 当前交易账户
+        const currentTimestamp = newTx.timestamp;         // 交易时间戳
+
+        // 检查是否为代币买入交易(排除SOL和USDC)
         if (tokenOutAddress !== SOL_ADDRESS && tokenOutAddress !== USDC_ADDRESS) {
+          // 计算6小时前的时间戳
           const sixHoursAgo = new Date(currentTimestamp);
           sixHoursAgo.setHours(sixHoursAgo.getHours() - 6);
-          const sixHoursAgoTimestamp = Math.floor(sixHoursAgo.getTime() / 1000); 
-          
-          // Query if other wallets bought this token in the last 6 hours
+          const sixHoursAgoTimestamp = Math.floor(sixHoursAgo.getTime() / 1000);
+
+          // 查询6小时内是否有其他钱包买入同一代币
           const { data, error } = await supabase
             .from('txs')
             .select('*')
-            .eq('token_out_address', tokenOutAddress)
-            .neq('account', currentAccount)
-            .gte('timestamp', sixHoursAgoTimestamp)
-            .limit(1);
-            
+            .eq('token_out_address', tokenOutAddress)    // 相同代币
+            .neq('account', currentAccount)              // 不同钱包
+            .gte('timestamp', sixHoursAgoTimestamp)      // 6小时内
+            .limit(1);                                   // 只需要确认存在性
+
+          // 处理查询错误
           if (error) {
             console.error(`[${getTimeStamp()}] Query error:`, error);
             return;
           }
-          
-          // If transactions from other wallets found
+
+          // 如果发现其他钱包的买入记录
           if (data && data.length > 0) {
             console.log(`[${getTimeStamp()}] Detected new multi-wallet transaction for token: ${tokenOutAddress}`);
-            // Call filter check function
+            // 触发代币分析和消息推送
             await checkFilter(tokenOutAddress);
           }
         }
       }
     )
+    // 错误处理
     .on('error', (error) => {
       console.error(`[${getTimeStamp()}] Supabase realtime connection error:`, error);
     })
+    // 订阅状态处理
     .subscribe((status) => {
       console.log(`[${getTimeStamp()}] Monitoring started... Subscription status:`, status);
     })

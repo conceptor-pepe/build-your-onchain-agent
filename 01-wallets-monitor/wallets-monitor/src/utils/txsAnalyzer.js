@@ -11,10 +11,10 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// Retrieves transaction records for a specific token
+// 从 Supabase 数据库获取指定代币的交易记录
 async function getTokenTxs(tokenAddress) {
   try {
-    // Query transactions for the token
+    // 查询该代币的所有交易记录
     const { data: txs } = await supabase
       .from('txs')
       .select('account, token_in_address, token_in_amount, token_out_address, token_out_amount, timestamp')
@@ -25,7 +25,7 @@ async function getTokenTxs(tokenAddress) {
       return {};
     }
 
-    // Group transactions by account
+    // 按账户地址对交易进行分组
     const accountTxs = {};
     txs.forEach(tx => {
       if (!accountTxs[tx.account]) {
@@ -41,14 +41,19 @@ async function getTokenTxs(tokenAddress) {
   }
 }
 
-// Gets the current price of a token
+// 获取代币的当前价格
 async function getTokenPrice(tokenAddress) {
   try {
+    // 如果是 SOL，使用 SOL 价格缓存
     if (tokenAddress === SOL_ADDRESS) {
       return new BigNumber(await solPrice.getPrice());
-    } else if (tokenAddress === USDC_ADDRESS) {
+    }
+    // 如果是 USDC，返回 1
+    else if (tokenAddress === USDC_ADDRESS) {
       return new BigNumber(1);
-    } else {
+    }
+    // 其他代币使用 DexScreener 获取价格
+    else {
       const tokenInfo = await DexScreener.getTokenInfo('solana', tokenAddress);
       return new BigNumber(tokenInfo.priceUSD || 0);
     }
@@ -58,38 +63,39 @@ async function getTokenPrice(tokenAddress) {
   }
 }
 
-// Retrieves the total supply of a token
+// 获取代币的总供应量
 async function getTokenSupply(tokenAddress) {
   try {
-    // Connect to Solana network
+    // 连接到 Solana 网络
     const connection = new Connection(process.env.RPC_ENDPOINT, 'confirmed');
-    
-    // Create token PublicKey
+
+    // 创建代币的 PublicKey
     const mintPubkey = new PublicKey(tokenAddress);
-    
-    // Get token information
+
+    // 获取代币信息
     const tokenInfo = await connection.getTokenSupply(mintPubkey);
     const totalSupply = tokenInfo.value.uiAmountString;
-    
-    // Return default value if not available
+
+    // 如果无法获取则返回默认值
     return totalSupply || '1000000000';
   } catch (error) {
     console.error(`Error getting supply for token ${tokenAddress}:`, error);
-    // Return default value on error
+    // 发生错误时返回默认值
     return '1000000000';
   }
 }
 
-// Formats a timestamp into a human-readable time ago string
+// 将时间戳格式化为"多久之前"的形式
 export function formatTimeAgo(timestamp) {
   const now = Math.floor(Date.now() / 1000);
   const diff = now - timestamp;
-  
-  // Time units in seconds
+
+  // 定义时间单位（秒）
   const minute = 60;
   const hour = minute * 60;
   const day = hour * 24;
-  
+
+  // 根据时间差返回对应的格式
   if (diff < minute) {
     return `${diff}s ago`;
   } else if (diff < hour) {
@@ -104,76 +110,82 @@ export function formatTimeAgo(timestamp) {
   }
 }
 
-// Analyzes transaction data for a token and calculates key metrics
+// 分析代币交易数据并计算关键指标
 async function analyzeTxs(accountTxs, tokenAddress) {
+  // 获取代币总供应量
   const totalSupply = new BigNumber(await getTokenSupply(tokenAddress));
   const result = {};
-  
+
+  // 遍历每个账户的交易
   for (const [account, txs] of Object.entries(accountTxs)) {
+    // 分离买入和卖出交易
     const buyTxs = txs.filter(tx => tx.token_out_address === tokenAddress);
     const sellTxs = txs.filter(tx => tx.token_in_address === tokenAddress);
-    
+
+    // 如果没有买入交易则跳过
     if (buyTxs.length === 0) continue;
 
+    // 初始化统计变量
     let totalBuyCost = new BigNumber(0);
     let totalBuyAmount = new BigNumber(0);
     let latestBuyTime = 0;
 
-    // Calculate buy-related data
+    // 计算买入相关数据
     for (const tx of buyTxs) {
       const tokenInPrice = await getTokenPrice(tx.token_in_address);
       const tokenInAmount = new BigNumber(tx.token_in_amount);
       const txCost = tokenInPrice.multipliedBy(tokenInAmount);
-      
+
       totalBuyCost = totalBuyCost.plus(txCost);
       totalBuyAmount = totalBuyAmount.plus(new BigNumber(tx.token_out_amount));
       latestBuyTime = Math.max(latestBuyTime, tx.timestamp);
     }
 
-    // Calculate total sell amount
+    // 计算总卖出量
     const totalSellAmount = sellTxs.reduce(
-      (sum, tx) => sum.plus(new BigNumber(tx.token_in_amount)), 
+      (sum, tx) => sum.plus(new BigNumber(tx.token_in_amount)),
       new BigNumber(0)
     );
-    
-    // Calculate holding percentage
+
+    // 计算持有百分比
     const remainingAmount = BigNumber.maximum(0, totalBuyAmount.minus(totalSellAmount));
     const holdsPercentage = remainingAmount.dividedBy(totalBuyAmount).multipliedBy(100);
-    
-    // Calculate average buy price
-    const averageBuyPrice = totalBuyAmount.isZero() ? 
-      new BigNumber(0) : 
+
+    // 计算平均买入价格
+    const averageBuyPrice = totalBuyAmount.isZero() ?
+      new BigNumber(0) :
       totalBuyCost.dividedBy(totalBuyAmount);
-    // Calculate average market cap at buy time
+    // 计算买入时的平均市值
     const averageMarketCap = averageBuyPrice.multipliedBy(totalSupply);
 
+    // 保存分析结果
     result[account] = {
       totalBuyCost: totalBuyCost.toFixed(0),
       averageBuyPrice: averageBuyPrice.toFixed(6),
       averageMarketCap: averageMarketCap.toFixed(0),
-      buyTime: formatTimeAgo(latestBuyTime), 
+      buyTime: formatTimeAgo(latestBuyTime),
       holdsPercentage: holdsPercentage.toFixed(2) + '%'
     };
   }
 
-  // Get all wallet addresses
+  // 获取所有钱包地址
   const walletAddresses = Object.keys(result);
-  
-  // Query wallet names from supabase
+
+  // 从数据库查询钱包名称
   const { data: wallets } = await supabase
     .from('wallets')
     .select('address, name')
     .in('address', walletAddresses);
-    
-  // Create address to name mapping
+
+  // 创建地址到名称的映射
   const addressToName = {};
   if (wallets) {
     wallets.forEach(wallet => {
       addressToName[wallet.address] = wallet.name;
     });
   }
-  
-  // Add wallet names to analysis results
+
+  // 将钱包名称添加到分析结果中
   const resultWithNames = Object.entries(result).reduce((acc, [address, data]) => {
     acc[address] = {
       ...data,
@@ -185,7 +197,7 @@ async function analyzeTxs(accountTxs, tokenAddress) {
   return resultWithNames;
 }
 
-// Main function to analyze transactions for a token
+// 主函数：分析指定代币的所有交易
 export async function analyzeTokenTxs(tokenAddress) {
   try {
     const transactionData = await getTokenTxs(tokenAddress);
@@ -196,5 +208,4 @@ export async function analyzeTokenTxs(tokenAddress) {
     throw error;
   }
 }
-
 
